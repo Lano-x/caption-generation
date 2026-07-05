@@ -38,3 +38,7 @@ desktop.ini
 # 环境变量
 .env
 .env.local
+
+# 临时文件
+stdout.txt
+stderr.txt

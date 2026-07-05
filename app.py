@@ -144,7 +144,7 @@ async def update_task_status(
 @app.get("/")
 async def index(request: Request):
     """主页"""
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="index.html")
 
 
 @app.get("/api/info")
@@ -548,20 +548,20 @@ async def startup_event():
     # 检查 Ollama 服务
     ollama_health = await ollama_service.check_health()
     if ollama_health:
-        print("✓ Ollama 服务连接正常")
+        print("[OK] Ollama 服务连接正常")
         models = await ollama_service.list_models()
         print(f"  可用模型: {', '.join(models)}")
     else:
-        print("✗ Ollama 服务未启动（字幕优化/翻译功能不可用）")
+        print("[WARN] Ollama 服务未启动（字幕优化/翻译功能不可用）")
         print("  请运行 'ollama serve' 启动服务")
 
     # Whisper 模型信息
-    print(f"✓ Whisper 模型: {settings.WHISPER_MODEL}")
+    print(f"[OK] Whisper 模型: {settings.WHISPER_MODEL}")
     import torch
     if torch.cuda.is_available():
-        print(f"✓ GPU 可用: {torch.cuda.get_device_name(0)}")
+        print(f"[OK] GPU 可用: {torch.cuda.get_device_name(0)}")
     else:
-        print("⚠ GPU 不可用，将使用 CPU（速度较慢）")
+        print("[WARN] GPU 不可用，将使用 CPU（速度较慢）")
 
     print("=" * 50)
 
