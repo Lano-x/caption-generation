@@ -158,11 +158,49 @@ async function startProcessing() {
             throw new Error(error.detail || '处理失败');
         }
 
+        // 开始轮询状态
+        pollStatus(currentTaskId);
+
     } catch (error) {
         showError(error.message);
         processBtn.disabled = false;
         processBtn.textContent = '🚀 开始生成字幕';
     }
+}
+
+// 轮询任务状态
+async function pollStatus(taskId) {
+    const pollInterval = setInterval(async () => {
+        try {
+            const response = await fetch(`/api/status/${taskId}`);
+            const data = await response.json();
+
+            // 更新进度
+            if (data.progress !== undefined) {
+                document.getElementById('progressBar').style.width = `${data.progress}%`;
+                document.getElementById('progressText').textContent = data.message;
+            }
+
+            updateStatus(data.status, data.message);
+
+            // 处理完成
+            if (data.status === 'completed' && data.segments) {
+                clearInterval(pollInterval);
+                subtitles = data.segments;
+                showResults(data.segments);
+            }
+
+            // 处理失败
+            if (data.status === 'failed') {
+                clearInterval(pollInterval);
+                showError(data.error || data.message);
+                document.getElementById('processBtn').disabled = false;
+                document.getElementById('processBtn').textContent = '🚀 开始生成字幕';
+            }
+        } catch (error) {
+            console.error('轮询状态失败:', error);
+        }
+    }, 1000); // 每秒轮询一次
 }
 
 // ==================== WebSocket 连接 ====================
@@ -398,6 +436,56 @@ async function downloadSubtitle() {
         window.URL.revokeObjectURL(url);
 
     } catch (error) {
+        showError(error.message);
+    }
+}
+
+// ==================== 烧录字幕功能 ====================
+
+async function burnSubtitles() {
+    if (!currentTaskId) {
+        showError('没有可烧录的字幕');
+        return;
+    }
+
+    showLoading('正在烧录字幕到视频...（可能需要几分钟）');
+
+    try {
+        const response = await fetch(`/api/burn-subtitles/${currentTaskId}`, {
+            method: 'POST'
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || '烧录失败');
+        }
+
+        // 获取文件名
+        const contentDisposition = response.headers.get('Content-Disposition');
+        let filename = 'video_subtitled.mp4';
+        if (contentDisposition) {
+            const matches = contentDisposition.match(/filename=(.+)/);
+            if (matches) {
+                filename = matches[1];
+            }
+        }
+
+        // 下载视频文件
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+
+        hideLoading();
+        showSuccess('字幕烧录完成！视频已下载');
+
+    } catch (error) {
+        hideLoading();
         showError(error.message);
     }
 }

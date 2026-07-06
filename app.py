@@ -1,11 +1,30 @@
 """视频字幕生成系统 - FastAPI 主应用"""
 
 import os
+import sys
 import uuid
 import asyncio
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
+
+# 将 FFmpeg 添加到 PATH（Whisper 内部需要）
+def setup_ffmpeg_path():
+    """将 FFmpeg 路径添加到系统 PATH"""
+    import shutil
+
+    # 1. 先检查是否已在 PATH 中
+    if shutil.which("ffmpeg"):
+        return
+
+    # 2. 通过 Python 路径推断 conda 环境
+    python_path = Path(sys.executable)
+    conda_ffmpeg_dir = python_path.parent / "Library" / "bin"
+
+    if (conda_ffmpeg_dir / "ffmpeg.exe").exists():
+        os.environ["PATH"] = str(conda_ffmpeg_dir) + os.pathsep + os.environ.get("PATH", "")
+
+setup_ffmpeg_path()
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
@@ -36,13 +55,13 @@ class Settings:
     }
 
     # Whisper 配置
-    WHISPER_MODEL = "medium"
+    WHISPER_MODEL = "medium"  # 使用 medium 模型（769MB），准确度高
     WHISPER_DEVICE = None  # 自动选择
     WHISPER_LANGUAGE = None  # 自动检测
 
     # Ollama 配置
     OLLAMA_URL = "http://localhost:11434"
-    OLLAMA_MODEL = "qwen2.5"
+    OLLAMA_MODEL = "qwen3:14b"
 
 
 settings = Settings()
@@ -473,6 +492,69 @@ async def download_subtitle(task_id: str, format: str = "srt", lang: str = ""):
         filename=f"{task.video_name or task_id}_{lang or 'original'}.{format}",
         media_type="application/octet-stream"
     )
+
+
+@app.post("/api/burn-subtitles/{task_id}")
+async def burn_subtitles(task_id: str, font_size: int = 24):
+    """
+    将字幕烧录到视频中
+
+    Args:
+        task_id: 任务 ID
+        font_size: 字体大小 (默认 24)
+
+    Returns:
+        带字幕的视频文件
+    """
+    if task_id not in tasks:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    task = tasks[task_id]
+
+    if task.status != "completed":
+        raise HTTPException(status_code=400, detail="任务尚未完成")
+
+    if not task.segments:
+        raise HTTPException(status_code=400, detail="没有可用的字幕数据")
+
+    try:
+        # 查找原视频文件
+        video_file = None
+        for ext in settings.ALLOWED_EXTENSIONS:
+            potential_path = settings.UPLOAD_DIR / f"{task_id}{ext}"
+            if potential_path.exists():
+                video_file = potential_path
+                break
+
+        if not video_file:
+            raise HTTPException(status_code=404, detail="未找到原视频文件")
+
+        # 生成 SRT 文件
+        segments = [
+            Segment(start=s["start"], end=s["end"], text=s["text"])
+            for s in task.segments
+        ]
+        srt_path = settings.OUTPUT_DIR / f"{task_id}.srt"
+        subtitle_formatter.to_srt(segments, str(srt_path))
+
+        # 烧录字幕到视频
+        output_video_path = settings.OUTPUT_DIR / f"{task_id}_subtitled{video_file.suffix}"
+        result_path = await audio_extractor.burn_subtitles(
+            str(video_file),
+            str(srt_path),
+            str(output_video_path),
+            font_size=font_size
+        )
+
+        # 返回视频文件
+        return FileResponse(
+            path=result_path,
+            filename=f"{task.video_name or task_id}_subtitled{video_file.suffix}",
+            media_type="video/mp4"
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"字幕烧录失败: {str(e)}")
 
 
 @app.get("/api/tasks")
