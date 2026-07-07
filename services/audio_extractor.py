@@ -111,17 +111,20 @@ class AudioExtractor:
             str(audio_path)               # 输出文件
         ]
 
-        # 执行 ffmpeg 命令
+        # 执行 ffmpeg 命令（使用同步方式避免 Windows asyncio 问题）
         try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    check=False
+                )
             )
-            stdout, stderr = await process.communicate()
 
-            if process.returncode != 0:
-                error_msg = stderr.decode('utf-8', errors='ignore')
+            if result.returncode != 0:
+                error_msg = result.stderr.decode('utf-8', errors='ignore')
                 raise RuntimeError(f"ffmpeg 执行失败: {error_msg}")
 
             return str(audio_path)
@@ -150,17 +153,20 @@ class AudioExtractor:
         ]
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    check=False
+                )
             )
-            stdout, stderr = await process.communicate()
 
-            if process.returncode != 0:
+            if result.returncode != 0:
                 raise RuntimeError("无法获取视频时长")
 
-            duration = float(stdout.decode('utf-8').strip())
+            duration = float(result.stdout.decode('utf-8').strip())
             return duration
 
         except (ValueError, FileNotFoundError):
@@ -214,7 +220,7 @@ class AudioExtractor:
         outline_width: int = 2
     ) -> str:
         """
-        将字幕烧录到视频中
+        将字幕烧录到视频中（使用 moviepy）
 
         Args:
             video_path: 原视频路径
@@ -228,6 +234,8 @@ class AudioExtractor:
         Returns:
             输出视频路径
         """
+        from moviepy import VideoFileClip, TextClip, CompositeVideoClip
+
         video_path = Path(video_path)
         subtitle_path = Path(subtitle_path)
 
@@ -242,50 +250,185 @@ class AudioExtractor:
         else:
             output_path = Path(output_path)
 
-        # 转换路径为正斜杠（FFmpeg 在 Windows 上需要）
-        subtitle_path_str = str(subtitle_path).replace("\\", "/").replace(":", "\\\\:")
+        # 读取 SRT 文件并解析字幕
+        segments = self._parse_srt(subtitle_path)
 
-        # 构建 FFmpeg 字幕滤镜
-        # 使用 subtitles 滤镜烧录字幕
-        subtitle_filter = (
-            f"subtitles='{subtitle_path_str}'"
-            f":force_style='FontSize={font_size},"
-            f"PrimaryColour=&H00FFFFFF,"  # 白色
-            f"OutlineColour=&H00000000,"  # 黑色描边
-            f"Outline={outline_width},"
-            f"Shadow=1,"
-            f"MarginV=30'"  # 底部边距
+        if not segments:
+            raise ValueError("字幕文件为空或格式错误")
+
+        # 在线程池中执行（避免阻塞事件循环）
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: self._burn_subtitles_sync(
+                str(video_path),
+                segments,
+                str(output_path),
+                font_size,
+                font_color
+            )
         )
 
-        # 构建 FFmpeg 命令
-        cmd = [
-            self.ffmpeg_path,
-            "-i", str(video_path),           # 输入视频
-            "-vf", subtitle_filter,           # 字幕滤镜
-            "-c:v", "libx264",               # 视频编码
-            "-preset", "medium",              # 编码预设
-            "-crf", "23",                     # 质量
-            "-c:a", "copy",                   # 音频直接复制
-            "-y",                             # 覆盖已存在文件
-            str(output_path)                  # 输出文件
+        return result
+
+    def _burn_subtitles_sync(
+        self,
+        video_path: str,
+        segments: list,
+        output_path: str,
+        font_size: int = 24,
+        font_color: str = "white"
+    ) -> str:
+        """同步执行字幕烧录"""
+        from moviepy import VideoFileClip, TextClip, CompositeVideoClip
+        import os
+
+        # 查找可用字体
+        font_path = None
+        possible_fonts = [
+            "C:/Windows/Fonts/msyh.ttc",      # 微软雅黑
+            "C:/Windows/Fonts/simhei.ttf",     # 黑体
+            "C:/Windows/Fonts/simsun.ttc",     # 宋体
+            "C:/Windows/Fonts/arial.ttf",      # Arial
         ]
+        for f in possible_fonts:
+            if os.path.exists(f):
+                font_path = f
+                break
 
-        # 执行 FFmpeg 命令
+        # 加载视频
+        video = VideoFileClip(video_path)
+
+        # 创建字幕片段
+        text_clips = []
+        for seg in segments:
+            # 处理多行文本（双语字幕）
+            lines = seg.text.split('\n')
+
+            if len(lines) > 1:
+                # 双语字幕：中文在上，英文在下
+                # 创建中文行
+                txt_kwargs_cn = {
+                    "text": lines[0],
+                    "font_size": font_size,
+                    "color": font_color,
+                    "stroke_color": "black",
+                    "stroke_width": 2
+                }
+                if font_path:
+                    txt_kwargs_cn["font"] = font_path
+
+                txt_clip_cn = (
+                    TextClip(**txt_kwargs_cn)
+                    .with_position(("center", "bottom"))
+                    .with_start(seg.start)
+                    .with_duration(seg.end - seg.start)
+                )
+
+                # 创建英文行
+                txt_kwargs_en = {
+                    "text": lines[1],
+                    "font_size": int(font_size * 0.8),
+                    "color": "#FFFF88",  # 浅黄色区分
+                    "stroke_color": "black",
+                    "stroke_width": 1
+                }
+                if font_path:
+                    txt_kwargs_en["font"] = font_path
+
+                txt_clip_en = (
+                    TextClip(**txt_kwargs_en)
+                    .with_position(("center", "bottom"))
+                    .with_start(seg.start)
+                    .with_duration(seg.end - seg.start)
+                )
+
+                # 调整位置：中文在上，英文在下
+                txt_clip_cn = txt_clip_cn.with_position(lambda t: ("center", video.h - 80))
+                txt_clip_en = txt_clip_en.with_position(lambda t: ("center", video.h - 45))
+
+                text_clips.append(txt_clip_cn)
+                text_clips.append(txt_clip_en)
+            else:
+                # 单行字幕
+                txt_kwargs = {
+                    "text": seg.text,
+                    "font_size": font_size,
+                    "color": font_color,
+                    "stroke_color": "black",
+                    "stroke_width": 2
+                }
+                if font_path:
+                    txt_kwargs["font"] = font_path
+
+                txt_clip = (
+                    TextClip(**txt_kwargs)
+                    .with_position(("center", "bottom"))
+                    .with_start(seg.start)
+                    .with_duration(seg.end - seg.start)
+                )
+                text_clips.append(txt_clip)
+
+        # 合成视频
+        final = CompositeVideoClip([video] + text_clips)
+
+        # 输出视频
+        final.write_videofile(
+            output_path,
+            codec="libx264",
+            audio_codec="aac",
+            preset="medium",
+            logger=None
+        )
+
+        # 清理资源
+        video.close()
+        final.close()
+
+        return output_path
+
+    def _parse_srt(self, srt_path: Path) -> list:
+        """解析 SRT 文件"""
+        from utils.subtitle_formatter import SubtitleFormatter
+        from services.whisper_service import Segment
+
+        segments = []
         try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await process.communicate()
+            with open(srt_path, 'r', encoding='utf-8') as f:
+                content = f.read()
 
-            if process.returncode != 0:
-                error_msg = stderr.decode('utf-8', errors='ignore')
-                raise RuntimeError(f"字幕烧录失败: {error_msg}")
+            # 简单的 SRT 解析
+            blocks = content.strip().split('\n\n')
+            for block in blocks:
+                lines = block.strip().split('\n')
+                if len(lines) >= 3:
+                    # 解析时间
+                    time_line = lines[1]
+                    start_str, end_str = time_line.split(' --> ')
 
-            return str(output_path)
+                    # 转换时间为秒
+                    start = self._srt_time_to_seconds(start_str.strip())
+                    end = self._srt_time_to_seconds(end_str.strip())
 
-        except FileNotFoundError:
-            raise RuntimeError(
-                "未找到 ffmpeg，请确保已安装 ffmpeg 并添加到系统 PATH"
-            )
+                    # 获取文本
+                    text = ' '.join(lines[2:])
+
+                    segments.append(Segment(start=start, end=end, text=text))
+        except Exception as e:
+            raise ValueError(f"解析 SRT 文件失败: {str(e)}")
+
+        return segments
+
+    def _srt_time_to_seconds(self, time_str: str) -> float:
+        """将 SRT 时间格式转换为秒"""
+        # 格式：HH:MM:SS,mmm
+        time_str = time_str.replace(',', '.')
+        parts = time_str.split(':')
+        hours = int(parts[0])
+        minutes = int(parts[1])
+        seconds = float(parts[2])
+        return hours * 3600 + minutes * 60 + seconds
+
+    def _seconds_to_ffmpeg_time(self, seconds: float) -> str:
+        """将秒转换为 FFmpeg 时间格式（使用秒数）"""
+        return f"{seconds:.3f}"

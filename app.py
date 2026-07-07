@@ -333,6 +333,10 @@ async def process_video_task(task_id: str):
         # audio_path 文件保留，供后续翻译使用
 
     except Exception as e:
+        import traceback
+        # 记录详细错误到文件
+        with open(BASE_DIR / "error.log", "w", encoding="utf-8") as f:
+            traceback.print_exc(file=f)
         await update_task_status(
             task_id, "failed", 0,
             f"处理失败: {str(e)}",
@@ -405,6 +409,26 @@ async def translate_subtitles(request: TranslationRequest):
         translated_srt_path = settings.OUTPUT_DIR / f"{task_id}_{request.target_lang}.srt"
         subtitle_formatter.to_srt(translated_segments, str(translated_srt_path))
 
+        # 生成双语 SRT 文件（中文在上，英文在下）
+        bilingual_srt_path = settings.OUTPUT_DIR / f"{task_id}_bilingual.srt"
+        with open(bilingual_srt_path, "w", encoding="utf-8") as f:
+            for i, (orig, trans) in enumerate(zip(segments, translated_segments), start=1):
+                f.write(f"{i}\n")
+                f.write(f"{subtitle_formatter.format_srt_time(orig.start)} --> {subtitle_formatter.format_srt_time(orig.end)}\n")
+                f.write(f"{trans.text}\n")  # 中文在上
+                f.write(f"{orig.text}\n")   # 英文在下
+                f.write("\n")
+
+        # 保存双语字幕到任务（用于烧录）
+        tasks[task_id].bilingual_segments = [
+            {
+                "start": orig.start,
+                "end": orig.end,
+                "text": f"{trans.text}\n{orig.text}"  # 中文\n英文
+            }
+            for orig, trans in zip(segments, translated_segments)
+        ]
+
         # 转换为字典格式
         translated_data = [
             {
@@ -425,7 +449,8 @@ async def translate_subtitles(request: TranslationRequest):
             "source_lang": request.source_lang,
             "target_lang": request.target_lang,
             "segments": translated_data,
-            "srt_file": f"{task_id}_{request.target_lang}.srt"
+            "srt_file": f"{task_id}_{request.target_lang}.srt",
+            "bilingual_srt_file": f"{task_id}_bilingual.srt"
         }
 
     except Exception as e:
@@ -529,11 +554,21 @@ async def burn_subtitles(task_id: str, font_size: int = 24):
         if not video_file:
             raise HTTPException(status_code=404, detail="未找到原视频文件")
 
-        # 生成 SRT 文件
-        segments = [
-            Segment(start=s["start"], end=s["end"], text=s["text"])
-            for s in task.segments
-        ]
+        # 优先使用双语字幕（如果已翻译）
+        bilingual_segments = getattr(task, 'bilingual_segments', None)
+        if bilingual_segments:
+            # 使用双语字幕
+            segments = [
+                Segment(start=s["start"], end=s["end"], text=s["text"])
+                for s in bilingual_segments
+            ]
+        else:
+            # 使用原始字幕
+            segments = [
+                Segment(start=s["start"], end=s["end"], text=s["text"])
+                for s in task.segments
+            ]
+
         srt_path = settings.OUTPUT_DIR / f"{task_id}.srt"
         subtitle_formatter.to_srt(segments, str(srt_path))
 
@@ -546,10 +581,14 @@ async def burn_subtitles(task_id: str, font_size: int = 24):
             font_size=font_size
         )
 
+        # 生成下载文件名（去掉原始扩展名）
+        original_name = Path(task.video_name).stem if task.video_name else task_id
+        download_filename = f"{original_name}_subtitled{video_file.suffix}"
+
         # 返回视频文件
         return FileResponse(
             path=result_path,
-            filename=f"{task.video_name or task_id}_subtitled{video_file.suffix}",
+            filename=download_filename,
             media_type="video/mp4"
         )
 
