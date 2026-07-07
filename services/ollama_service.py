@@ -215,7 +215,7 @@ class OllamaService:
         target_lang: str = "en"
     ) -> list[Segment]:
         """
-        翻译字幕
+        翻译字幕（分批处理，避免超时）
 
         Args:
             segments: 原始字幕片段
@@ -250,36 +250,43 @@ class OllamaService:
 
 请直接返回翻译后的文本，每行对应原始字幕的一个片段，不要添加任何解释。"""
 
-        # 构建输入文本
-        input_text = "\n".join([
-            f"[{i+1}] {seg.text}"
-            for i, seg in enumerate(segments)
-        ])
-
-        prompt = f"请翻译以下字幕：\n\n{input_text}"
-
-        # 调用 Ollama
-        result = await self.generate(prompt, system=system_prompt)
-
-        # 解析结果
-        translated_lines = [
-            line.strip()
-            for line in result.strip().split("\n")
-            if line.strip()
-        ]
-
-        # 创建翻译后的片段
+        # 分批翻译（每批 20 条）
+        batch_size = 20
         translated_segments = []
-        for i, seg in enumerate(segments):
-            if i < len(translated_lines):
-                text = translated_lines[i]
-                if "]" in text:
-                    text = text.split("]", 1)[1].strip()
-                translated_segments.append(
-                    Segment(start=seg.start, end=seg.end, text=text)
-                )
-            else:
-                translated_segments.append(seg)
+
+        for batch_start in range(0, len(segments), batch_size):
+            batch_end = min(batch_start + batch_size, len(segments))
+            batch_segments = segments[batch_start:batch_end]
+
+            # 构建输入文本
+            input_text = "\n".join([
+                f"[{i+1}] {seg.text}"
+                for i, seg in enumerate(batch_segments)
+            ])
+
+            prompt = f"请翻译以下字幕：\n\n{input_text}"
+
+            # 调用 Ollama
+            result = await self.generate(prompt, system=system_prompt)
+
+            # 解析结果
+            translated_lines = [
+                line.strip()
+                for line in result.strip().split("\n")
+                if line.strip()
+            ]
+
+            # 创建翻译后的片段
+            for i, seg in enumerate(batch_segments):
+                if i < len(translated_lines):
+                    text = translated_lines[i]
+                    if "]" in text:
+                        text = text.split("]", 1)[1].strip()
+                    translated_segments.append(
+                        Segment(start=seg.start, end=seg.end, text=text)
+                    )
+                else:
+                    translated_segments.append(seg)
 
         return translated_segments
 

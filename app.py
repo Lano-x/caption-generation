@@ -107,6 +107,7 @@ class TaskStatus(BaseModel):
     completed_at: Optional[str] = None
     video_name: Optional[str] = None
     segments: Optional[list[dict]] = None
+    bilingual_segments: Optional[list[dict]] = None  # 双语字幕
     error: Optional[str] = None
 
 
@@ -329,8 +330,11 @@ async def process_video_task(task_id: str):
             segments=segments_data
         )
 
-        # 清理临时文件
-        # audio_path 文件保留，供后续翻译使用
+        # 清理临时音频文件
+        try:
+            Path(audio_path).unlink(missing_ok=True)
+        except:
+            pass
 
     except Exception as e:
         import traceback
@@ -454,6 +458,11 @@ async def translate_subtitles(request: TranslationRequest):
         }
 
     except Exception as e:
+        import traceback
+        # 记录详细错误到文件
+        with open(BASE_DIR / "error.log", "w", encoding="utf-8") as f:
+            f.write("=== 翻译错误 ===\n")
+            traceback.print_exc(file=f)
         raise HTTPException(
             status_code=500,
             detail=f"翻译失败: {str(e)}"
