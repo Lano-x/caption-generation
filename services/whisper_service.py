@@ -138,6 +138,41 @@ class WhisperService:
 
         return segments
 
+    async def detect_speech_start(self, audio_path: str, threshold: float = 0.02) -> float:
+        """
+        检测音频中真正开始说话的时间点
+
+        Args:
+            audio_path: 音频文件路径
+            threshold: 音量阈值（0-1），低于此值视为静音
+
+        Returns:
+            开始说话的时间（秒）
+        """
+        import numpy as np
+
+        loop = asyncio.get_event_loop()
+
+        # 加载音频
+        audio = await loop.run_in_executor(
+            None,
+            lambda: whisper.load_audio(audio_path)
+        )
+
+        # 计算每帧的 RMS 音量
+        sample_rate = 16000  # Whisper 使用 16kHz
+        frame_size = int(sample_rate * 0.1)  # 100ms 一帧
+
+        for i in range(0, len(audio), frame_size):
+            frame = audio[i:i + frame_size]
+            if len(frame) == 0:
+                break
+            rms = np.sqrt(np.mean(frame.astype(float) ** 2)) / 32768.0
+            if rms > threshold:
+                return i / sample_rate
+
+        return 0.0
+
     async def detect_language(self, audio_path: str) -> str:
         """
         检测音频语言

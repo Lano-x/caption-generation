@@ -280,6 +280,9 @@ class OllamaService:
             for i, seg in enumerate(batch_segments):
                 if i < len(translated_lines):
                     text = translated_lines[i]
+                    # 去掉可能的编号（如 "1." 或 "[1]"）
+                    import re
+                    text = re.sub(r'^\d+[\.\)]\s*', '', text)  # 去掉 "1. " 或 "1) "
                     if "]" in text:
                         text = text.split("]", 1)[1].strip()
                     translated_segments.append(

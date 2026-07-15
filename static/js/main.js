@@ -460,6 +460,10 @@ async function burnSubtitles() {
             throw new Error(error.detail || '烧录失败');
         }
 
+        // 获取烧录时间
+        const burnTime = response.headers.get('X-Burn-Time');
+        const burnTimeText = burnTime ? `耗时 ${burnTime}秒` : '';
+
         // 获取文件名
         const contentDisposition = response.headers.get('Content-Disposition');
         let filename = 'video_subtitled.mp4';
@@ -482,7 +486,7 @@ async function burnSubtitles() {
         window.URL.revokeObjectURL(url);
 
         hideLoading();
-        showSuccess('字幕烧录完成！视频已下载');
+        showSuccess(`字幕烧录完成！${burnTimeText}`);
 
     } catch (error) {
         hideLoading();

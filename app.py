@@ -308,11 +308,15 @@ async def process_video_task(task_id: str):
 
         segments = await whisper_service.transcribe(audio_path)
 
-        # 转换为字典格式
+        # 检测音频真正开始说话的时间，校准时间戳
+        speech_start = await whisper_service.detect_speech_start(audio_path)
+        print(f"[INFO] 音频起始说话时间: {speech_start:.1f}秒")
+
+        # 转换为字典格式并校准时间戳
         segments_data = [
             {
-                "start": seg.start,
-                "end": seg.end,
+                "start": seg.start + speech_start,
+                "end": seg.end + speech_start,
                 "text": seg.text
             }
             for seg in segments
@@ -529,13 +533,14 @@ async def download_subtitle(task_id: str, format: str = "srt", lang: str = ""):
 
 
 @app.post("/api/burn-subtitles/{task_id}")
-async def burn_subtitles(task_id: str, font_size: int = 24):
+async def burn_subtitles(task_id: str, font_size: int = 24, time_offset: float = 0.0):
     """
     将字幕烧录到视频中
 
     Args:
         task_id: 任务 ID
         font_size: 字体大小 (默认 24)
+        time_offset: 时间偏移（秒），负数表示字幕提前，正数表示字幕延后
 
     Returns:
         带字幕的视频文件
@@ -578,28 +583,48 @@ async def burn_subtitles(task_id: str, font_size: int = 24):
                 for s in task.segments
             ]
 
+        # 应用时间偏移
+        if time_offset != 0.0:
+            segments = [
+                Segment(
+                    start=max(0, seg.start + time_offset),
+                    end=max(0, seg.end + time_offset),
+                    text=seg.text
+                )
+                for seg in segments
+            ]
+
         srt_path = settings.OUTPUT_DIR / f"{task_id}.srt"
         subtitle_formatter.to_srt(segments, str(srt_path))
 
         # 烧录字幕到视频
         output_video_path = settings.OUTPUT_DIR / f"{task_id}_subtitled{video_file.suffix}"
-        result_path = await audio_extractor.burn_subtitles(
+        result_path, elapsed_time = await audio_extractor.burn_subtitles(
             str(video_file),
             str(srt_path),
             str(output_video_path),
             font_size=font_size
         )
 
-        # 生成下载文件名（去掉原始扩展名）
-        original_name = Path(task.video_name).stem if task.video_name else task_id
-        download_filename = f"{original_name}_subtitled{video_file.suffix}"
+        # 记录烧录时间
+        print(f"\n{'='*50}")
+        print(f"[INFO] 字幕烧录完成!")
+        print(f"[INFO] 耗时: {elapsed_time:.1f}秒 ({elapsed_time/60:.1f}分钟)")
+        print(f"[INFO] 输出文件: {result_path}")
+        print(f"{'='*50}\n")
 
-        # 返回视频文件
-        return FileResponse(
+        # 生成下载文件名
+        original_name = Path(task.video_name).stem if task.video_name else task_id
+        download_filename = f"{original_name}_subtitled.mp4"
+
+        # 返回视频文件，在响应头中添加烧录时间
+        response = FileResponse(
             path=result_path,
             filename=download_filename,
             media_type="video/mp4"
         )
+        response.headers["X-Burn-Time"] = f"{elapsed_time:.1f}"
+        return response
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"字幕烧录失败: {str(e)}")

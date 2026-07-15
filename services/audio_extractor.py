@@ -258,7 +258,7 @@ class AudioExtractor:
 
         # 在线程池中执行（避免阻塞事件循环）
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
+        output_path_result, elapsed_time = await loop.run_in_executor(
             None,
             lambda: self._burn_subtitles_sync(
                 str(video_path),
@@ -269,7 +269,7 @@ class AudioExtractor:
             )
         )
 
-        return result
+        return output_path_result, elapsed_time
 
     def _burn_subtitles_sync(
         self,
@@ -278,10 +278,15 @@ class AudioExtractor:
         output_path: str,
         font_size: int = 24,
         font_color: str = "white"
-    ) -> str:
-        """同步执行字幕烧录"""
+    ) -> tuple[str, float]:
+        """同步执行字幕烧录
+
+        Returns:
+            tuple: (输出路径, 烧录耗时秒数)
+        """
         from moviepy import VideoFileClip, TextClip, CompositeVideoClip
         import os
+        import time
 
         # 查找可用字体
         font_path = None
@@ -296,14 +301,21 @@ class AudioExtractor:
                 font_path = f
                 break
 
+        # 记录开始时间
+        start_time = time.time()
+
         # 加载视频
         video = VideoFileClip(video_path)
 
         # 创建字幕片段
         text_clips = []
-        for seg in segments:
+        for i, seg in enumerate(segments):
             # 处理多行文本（双语字幕）
             lines = seg.text.split('\n')
+
+            # 调试：打印前3条字幕
+            if i < 3:
+                print(f"[DEBUG] 字幕 {i}: text={repr(seg.text)}, lines={lines}, len={len(lines)}")
 
             if len(lines) > 1:
                 # 双语字幕：中文在上，英文在下
@@ -344,8 +356,9 @@ class AudioExtractor:
                 )
 
                 # 调整位置：中文在上，英文在下
-                txt_clip_cn = txt_clip_cn.with_position(lambda t: ("center", video.h - 80))
-                txt_clip_en = txt_clip_en.with_position(lambda t: ("center", video.h - 45))
+                # 中文在上（距离底部200像素），英文在下（距离底部100像素）
+                txt_clip_cn = txt_clip_cn.with_position(lambda t: ("center", video.h - 200))
+                txt_clip_en = txt_clip_en.with_position(lambda t: ("center", video.h - 100))
 
                 text_clips.append(txt_clip_cn)
                 text_clips.append(txt_clip_en)
@@ -372,20 +385,34 @@ class AudioExtractor:
         # 合成视频
         final = CompositeVideoClip([video] + text_clips)
 
-        # 输出视频
-        final.write_videofile(
-            output_path,
-            codec="libx264",
-            audio_codec="aac",
-            preset="medium",
-            logger=None
-        )
+        # 输出视频（使用 GPU 加速）
+        try:
+            # 尝试使用 NVENC GPU 加速
+            final.write_videofile(
+                output_path,
+                codec="h264_nvenc",
+                audio_codec="aac",
+                preset="fast",
+                logger=None
+            )
+        except Exception:
+            # 如果 NVENC 失败，回退到 CPU 编码
+            final.write_videofile(
+                output_path,
+                codec="libx264",
+                audio_codec="aac",
+                preset="ultrafast",  # 使用最快的预设
+                logger=None
+            )
 
         # 清理资源
         video.close()
         final.close()
 
-        return output_path
+        # 计算耗时
+        elapsed_time = time.time() - start_time
+
+        return output_path, elapsed_time
 
     def _parse_srt(self, srt_path: Path) -> list:
         """解析 SRT 文件"""

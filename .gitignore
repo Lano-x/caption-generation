@@ -19,6 +19,9 @@ build/
 *.swp
 *.swo
 
+# Claude
+.claude/
+
 # 项目特定
 uploads/
 outputs/
