@@ -13,6 +13,8 @@
 
 ## 界面预览
 
+![功能界面](docs/images/show0.png)
+
 ![界面预览](docs/images/show1.png)
 
 ![顶部区域](docs/images/show2.png)
